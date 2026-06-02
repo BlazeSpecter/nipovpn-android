@@ -1,0 +1,48 @@
+---
+general:
+  token: "af445adb-2434-4975-9445-2c1b2231"
+  fakeUrls:
+    - nipo.ciron.net
+    - www.google.com
+    - sudoer.net
+    - sudoer.ir
+  methods:
+    - GET
+    - POST
+    - PUT
+    - DELETE
+  endPoints:
+    - api
+    - login
+    - user
+    - update
+  timeout: 10
+  pullTimeout: 50
+  tunnelEnable: true
+  connectionReuse: false
+  tlsEnable: true
+  tlsVerifyPeer: false
+  tlsCertFile: "/etc/nipovpn/server.crt"
+  tlsKeyFile: "/etc/nipovpn/server.key"
+  tlsCaFile: ""
+
+
+log:
+  logLevel: "DEBUG"
+  logFile: "/data/user/0/net.sudoer.nipovpn/files/logs/nipovpn.log"
+
+server:
+  threads: 8
+  listenIp: "0.0.0.0"
+  listenPort: 80
+
+
+agent:
+  threads: 8
+  listenIp: "127.0.0.1"
+  listenPort: 8080
+  serverIp: "46.225.50.122"
+  serverPort: 443
+  httpVersion: "1.1"
+  userAgent : "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:132.0) Gecko/20100101 Firefox/132.0"
+
