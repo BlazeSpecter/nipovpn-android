@@ -70,6 +70,14 @@ import androidx.core.content.ContextCompat
 import net.sudoer.nipovpn.ui.theme.NipoVPNTheme
 import java.util.UUID
 
+import androidx.compose.foundation.Image
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.ui.draw.clip
+import androidx.compose.foundation.layout.size
+
+
 private val NipoDarkOrange = Color(0xFFE65100)
 private val NipoDarkOrangeTrack = Color(0xFFFFB74D)
 private val NipoDarkOrangeLight = Color(0xFFFFE0B2)
@@ -246,6 +254,26 @@ fun ProfileListPage(
             .verticalScroll(rememberScrollState())
             .padding(horizontal = 16.dp, vertical = 12.dp)
     ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Image(
+                painter = painterResource(R.drawable.nipovpn_logo),
+                contentDescription = "NipoVPN",
+                modifier = Modifier
+                    .size(56.dp)
+                    .clip(CircleShape)
+            )
+        
+            Spacer(Modifier.width(12.dp))
+        
+            Text(
+                text = "NipoVPN",
+                style = MaterialTheme.typography.headlineSmall
+            )
+        }
+        
+        Spacer(Modifier.height(12.dp))
         SectionCardActions(
             title = "Profiles",
             actions = {
