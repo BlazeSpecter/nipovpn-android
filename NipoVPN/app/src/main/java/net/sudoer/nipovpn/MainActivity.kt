@@ -241,10 +241,11 @@ fun NipoVpnApp(context: Context, importUri: Uri?, onStart: () -> Unit, onStop: (
                         onBack = { draft = null; screen = "list" },
                         onToggle = { toggle(editing.id) },
                         onSave = { updated ->
-                            if (draft?.id == updated.id) persist(profiles + updated)   // commit the new draft
+                            if (draft?.id == updated.id) persist(profiles + updated)
                             else persist(profiles.map { if (it.id == updated.id) updated else it })
                             draft = null
                             screen = "list"
+                            Toast.makeText(context, "\"${updated.name}\" saved", Toast.LENGTH_SHORT).show()
                             LogManager.append("Saved profile: ${updated.name}")
                         },
                         onDelete = { dialog = "delete" },
