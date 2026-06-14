@@ -148,10 +148,16 @@ fun NipoVpnApp(context: Context, importUri: Uri?, onStart: () -> Unit, onStop: (
     // persisted list) so backing out of the editor discards it instead of
     // leaving an empty "New profile" on disk.
     var draft by remember { mutableStateOf<NipoProfile?>(null) }
+    // The profile the user has picked to act on (left indicator on the list).
+    // The hero Connect button connects this one. Null → fall back to the
+    // running profile, else the first profile.
+    var selectedId by remember { mutableStateOf<String?>(null) }
 
     val connectionState by ConnectionStatus.state.collectAsState()
     val activeProfile = profiles.firstOrNull { it.enabled }
     val connected = connectionState.running
+    val resolvedSelectedId = selectedId?.takeIf { id -> profiles.any { it.id == id } }
+        ?: activeProfile?.id ?: profiles.firstOrNull()?.id
 
     fun persist(updated: List<NipoProfile>) { profiles = updated; saveProfiles(context, updated) }
 
@@ -239,7 +245,7 @@ fun NipoVpnApp(context: Context, importUri: Uri?, onStart: () -> Unit, onStop: (
                         profile = editing,
                         connected = connected && editing.id == activeProfile?.id,
                         onBack = { draft = null; screen = "list" },
-                        onToggle = { toggle(editing.id) },
+                        onToggle = { selectedId = editing.id; toggle(editing.id) },
                         onSave = { updated ->
                             if (draft?.id == updated.id) persist(profiles + updated)
                             else persist(profiles.map { if (it.id == updated.id) updated else it })
@@ -262,10 +268,12 @@ fun NipoVpnApp(context: Context, importUri: Uri?, onStart: () -> Unit, onStop: (
                     tab == "profiles" -> NdProfilesScreen(
                         profiles = profiles,
                         activeId = activeProfile?.id,
+                        selectedId = resolvedSelectedId,
                         connected = connected,
                         elapsed = formatElapsed(elapsedSeconds),
                         pingMs = pingMs,
-                        onToggle = { toggle(it) },
+                        onSelect = { selectedId = it },
+                        onConnect = { resolvedSelectedId?.let { id -> toggle(id) } },
                         onOpen = { draft = null; editId = it; screen = "config" },
                         onAdd = { addProfile() },
                         onImport = { importText = ""; dialog = "import" },
@@ -427,28 +435,41 @@ private fun NdStatusOn(hc: NdColors, label: String, color: androidx.compose.ui.g
 
 // ── Profile row ─────────────────────────────────────────────────────
 @Composable
-private fun NdProfileRow(profile: NipoProfile, active: Boolean, onToggle: () -> Unit, onOpen: () -> Unit) {
+private fun NdProfileRow(
+    profile: NipoProfile,
+    selected: Boolean,
+    running: Boolean,
+    onSelect: () -> Unit,
+    onOpen: () -> Unit,
+) {
     val c = NdTheme.colors
+    // Left indicator: green when running, white/primary when selected (but not
+    // yet running), nothing otherwise.
+    val indicator = when {
+        running -> c.success
+        selected -> c.primary
+        else -> androidx.compose.ui.graphics.Color.Transparent
+    }
+    val marked = running || selected
     Row(
         Modifier.fillMaxWidth()
-            .background(if (active) c.surfaceRaised else androidx.compose.ui.graphics.Color.Transparent)
+            .background(if (marked) c.surfaceRaised else androidx.compose.ui.graphics.Color.Transparent)
             .height(72.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Box(Modifier.fillMaxHeight().width(2.dp).background(if (active) c.success else androidx.compose.ui.graphics.Color.Transparent))
-        Row(Modifier.weight(1f).fillMaxHeight().ndClick(onClick = onOpen).padding(start = 14.dp, end = 8.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-            Box(Modifier.size(8.dp).background(if (active) c.success else androidx.compose.ui.graphics.Color.Transparent).then(if (active) Modifier else Modifier.border(1.dp, c.borderVisible)))
+        Box(Modifier.fillMaxHeight().width(2.dp).background(indicator))
+        // Tapping the row body selects this profile (the hero Connect then
+        // acts on it). Editing is via the chevron on the right.
+        Row(Modifier.weight(1f).fillMaxHeight().ndClick(onClick = onSelect).padding(start = 14.dp, end = 8.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+            Box(Modifier.size(8.dp).background(indicator).then(if (marked) Modifier else Modifier.border(1.dp, c.borderVisible)))
             Column(Modifier.weight(1f)) {
                 Text(profile.name, maxLines = 1, overflow = TextOverflow.Ellipsis, style = TextStyle(fontFamily = NothingFonts.Body, fontWeight = FontWeight.Medium, fontSize = 16.sp, color = c.primary))
                 Spacer(Modifier.height(3.dp))
                 Text(profile.config.protocol.uppercase(), style = TextStyle(fontFamily = NothingFonts.Mono, fontSize = 12.sp, letterSpacing = 0.02.em, color = c.secondary))
             }
         }
-        Box(Modifier.size(44.dp).clip(RoundedCornerShape(999.dp)).border(1.dp, c.borderVisible, RoundedCornerShape(999.dp)).ndClick(onClick = onToggle), contentAlignment = Alignment.Center) {
-            Icon(if (active) Icons.Filled.Pause else Icons.Filled.PlayArrow, null, tint = c.primary, modifier = Modifier.size(18.dp))
-        }
-        Box(Modifier.width(32.dp), contentAlignment = Alignment.Center) {
-            Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, null, tint = c.disabled, modifier = Modifier.size(18.dp))
+        Box(Modifier.size(44.dp).clip(RoundedCornerShape(999.dp)).ndClick(onClick = onOpen), contentAlignment = Alignment.Center) {
+            Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, null, tint = c.secondary, modifier = Modifier.size(20.dp))
         }
     }
 }
@@ -458,17 +479,22 @@ private fun NdProfileRow(profile: NipoProfile, active: Boolean, onToggle: () -> 
 private fun NdProfilesScreen(
     profiles: List<NipoProfile>,
     activeId: String?,
+    selectedId: String?,
     connected: Boolean,
     elapsed: String,
     pingMs: Long?,
-    onToggle: (String) -> Unit,
+    onSelect: (String) -> Unit,
+    onConnect: () -> Unit,
     onOpen: (String) -> Unit,
     onAdd: () -> Unit,
     onImport: () -> Unit,
 ) {
     val c = NdTheme.colors
     val heroColors = c // hero follows the ambient theme (no inverted panel)
-    val displayProfile = profiles.firstOrNull { it.id == activeId } ?: profiles.firstOrNull()
+    val displayProfile = profiles.firstOrNull { it.id == selectedId }
+    // Only show the connected state in the hero when the selected profile IS
+    // the one currently running (you may select another while connected).
+    val heroConnected = connected && activeId == selectedId
     Column(Modifier.fillMaxSize()) {
         NdTopBar(
             title = "NipoVPN",
@@ -486,17 +512,23 @@ private fun NdProfilesScreen(
             NdConnectionHero(
                 hc = heroColors,
                 profile = displayProfile,
-                connected = connected,
+                connected = heroConnected,
                 elapsed = elapsed,
                 pingMs = pingMs,
-                onToggle = { displayProfile?.id?.let(onToggle) },
+                onToggle = onConnect,
             )
             Spacer(Modifier.height(28.dp))
             NdLabel("Profiles · ${profiles.size}")
             Spacer(Modifier.height(4.dp))
             NdDivider(c.borderVisible)
             profiles.forEachIndexed { i, p ->
-                NdProfileRow(p, p.id == activeId, onToggle = { onToggle(p.id) }, onOpen = { onOpen(p.id) })
+                NdProfileRow(
+                    profile = p,
+                    selected = p.id == selectedId,
+                    running = connected && p.id == activeId,
+                    onSelect = { onSelect(p.id) },
+                    onOpen = { onOpen(p.id) },
+                )
                 if (i < profiles.size - 1) NdDivider(c.border)
             }
             NdDivider(c.border)
@@ -589,7 +621,7 @@ private fun NdConfigScreen(
         NdTopBar(
             title = "Edit Profile",
             leading = { NdBackButton(Icons.AutoMirrored.Filled.ArrowBack, onBack) },
-            trailing = { NdButton("Save", { save() }, variant = NdButtonVariant.PRIMARY) },
+            trailing = { NdIconButton(Icons.Filled.Link, onCopyLink) },
         )
         Column(Modifier.weight(1f).fillMaxWidth().navigationBarsPadding().verticalScroll(rememberScrollState()).padding(start = 16.dp, end = 16.dp, bottom = 32.dp)) {
 
@@ -608,6 +640,7 @@ private fun NdConfigScreen(
                     full = true,
                 )
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    NdBoxInput("Buffer · B", cfg.bufferSize, { cfg = cfg.copy(bufferSize = it) }, numeric = true, placeholder = "65536", modifier = Modifier.weight(1f))
                     NdBoxInput("Timeout · s", cfg.timeout, { cfg = cfg.copy(timeout = it) }, numeric = true, modifier = Modifier.weight(1f))
                     NdBoxInput("Pull", cfg.pullTimeout, { cfg = cfg.copy(pullTimeout = it) }, numeric = true, modifier = Modifier.weight(1f))
                 }
@@ -654,7 +687,7 @@ private fun NdConfigScreen(
                 if (connected) NdButton("Disconnect", onToggle, variant = NdButtonVariant.DESTRUCTIVE, icon = Icons.Filled.Pause, full = true)
                 else NdButton("Connect", onToggle, variant = NdButtonVariant.PRIMARY, icon = Icons.Filled.PlayArrow, full = true)
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    NdButton("Share", onCopyLink, variant = NdButtonVariant.SECONDARY, icon = Icons.Filled.Link, full = true, modifier = Modifier.weight(1f))
+                    NdButton("Save", { save() }, variant = NdButtonVariant.PRIMARY, full = true, modifier = Modifier.weight(1f))
                     NdButton("Delete", onDelete, variant = NdButtonVariant.GHOST, icon = Icons.Filled.Delete)
                 }
             }
