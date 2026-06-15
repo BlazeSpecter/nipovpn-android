@@ -640,6 +640,7 @@ private fun NdConfigScreen(
                     full = true,
                 )
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    NdBoxInput("Buffer · B", cfg.bufferSize, { cfg = cfg.copy(bufferSize = it) }, numeric = true, placeholder = "65536", modifier = Modifier.weight(1f))
                     NdBoxInput("Timeout · s", cfg.timeout, { cfg = cfg.copy(timeout = it) }, numeric = true, modifier = Modifier.weight(1f))
                     NdBoxInput("Pull", cfg.pullTimeout, { cfg = cfg.copy(pullTimeout = it) }, numeric = true, modifier = Modifier.weight(1f))
                 }
@@ -667,7 +668,6 @@ private fun NdConfigScreen(
 
             NdSection("Advanced") {
                 NdBoxInput("User agent", cfg.userAgent, { cfg = cfg.copy(userAgent = it) }, mono = false, multiline = true, rows = 2)
-                NdBoxInput("Buffer size · bytes", cfg.bufferSize, { cfg = cfg.copy(bufferSize = it) }, numeric = true, placeholder = "65536")
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     NdBoxInput("Fake URLs", cfg.fakeUrls, { cfg = cfg.copy(fakeUrls = it) }, multiline = true, rows = 3, placeholder = "www.google.com", modifier = Modifier.weight(1f))
                     NdBoxInput("Endpoints", cfg.endPoints, { cfg = cfg.copy(endPoints = it) }, multiline = true, rows = 3, modifier = Modifier.weight(1f))
