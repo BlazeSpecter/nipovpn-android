@@ -1,38 +1,49 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
 }
 
+val keystoreProperties = Properties()
+val keystorePropertiesFile = rootProject.file("keystore.properties")
+
+if (keystorePropertiesFile.exists()) {
+    keystoreProperties.load(keystorePropertiesFile.inputStream())
+}
+
 android {
-    namespace = "net.sudoer.nipovpn"
+    namespace = "net.sudoer.nipo"
     compileSdk = 36
 
     defaultConfig {
-        applicationId = "net.sudoer.nipovpn"
+        applicationId = "net.sudoer.nipo"
         minSdk = 24
         targetSdk = 36
-        versionCode = 11581
-        versionName = "1.1.59.1"
+        versionCode = 11592
+        versionName = "1.1.59.2"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
     signingConfigs {
-        // Fixed, committed debug keystore so every build signs with the same
-        // key. Without this, builds are signed by the per-machine
-        // ~/.android/debug.keystore, whose certificate changes between
-        // machines — forcing an uninstall ("signatures do not match") on
-        // every install. Standard well-known debug credentials; the
-        // CN=Android Debug certificate carries no identifying info.
         getByName("debug") {
             storeFile = file("debug.keystore")
             storePassword = "android"
             keyAlias = "androiddebugkey"
             keyPassword = "android"
         }
+
+        create("release") {
+            storeFile = rootProject.file(keystoreProperties["storeFile"] as String)
+            storePassword = keystoreProperties["storePassword"] as String
+            keyAlias = keystoreProperties["keyAlias"] as String
+            keyPassword = keystoreProperties["keyPassword"] as String
+        }
     }
 
     buildTypes {
         release {
+            signingConfig = signingConfigs.getByName("release")
             isMinifyEnabled = false
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
