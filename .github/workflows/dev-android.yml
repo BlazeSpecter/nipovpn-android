@@ -49,17 +49,24 @@ jobs:
       - name: Make gradlew executable
         run: chmod +x gradlew
 
-      - name: Build signed AAB
-        run: ./gradlew clean bundleRelease
+      - name: Build signed APK and AAB
+        run: ./gradlew clean assembleRelease bundleRelease
 
       - name: Verify AAB signature
         run: jarsigner -verify -verbose -certs app/build/outputs/bundle/release/app-release.aab
 
+      - name: Verify APK signature
+        run: jarsigner -verify -verbose -certs app/build/outputs/apk/release/app-release.apk
+
       - name: Prepare release files
         run: |
           mkdir -p ../release
+
           cp app/build/outputs/bundle/release/app-release.aab \
              ../release/NipoVPN-dev-${{ env.PACKAGE_VERSION }}.aab
+
+          cp app/build/outputs/apk/release/app-release.apk \
+             ../release/NipoVPN-dev-${{ env.PACKAGE_VERSION }}.apk
 
       - name: Create Pre-Release
         uses: softprops/action-gh-release@v2
@@ -68,4 +75,6 @@ jobs:
           name: Android dev build ${{ env.PACKAGE_VERSION }}
           prerelease: true
           generate_release_notes: true
-          files: release/*.aab
+          files: |
+            release/*.aab
+            release/*.apk
