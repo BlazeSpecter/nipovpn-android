@@ -6,7 +6,7 @@ on:
     branches:
       - dev
     paths:
-      - 'NipoVPN'
+      - 'NipoVPN/**'
       - '.github/workflows/dev-android.yml'
 
 permissions:
@@ -18,29 +18,48 @@ env:
 jobs:
   build:
     runs-on: ubuntu-latest
+
     defaults:
       run:
         working-directory: NipoVPN
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - uses: actions/setup-java@v4
+      - name: Setup Java
+        uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: 17
 
+      - name: Restore release keystore
+        run: |
+          echo "${{ secrets.RELEASE_KEYSTORE_BASE64 }}" | base64 -d > release.keystore
+
+      - name: Create keystore.properties
+        run: |
+          cat > keystore.properties <<EOF
+          storeFile=release.keystore
+          storePassword=${{ secrets.RELEASE_KEYSTORE_PASSWORD }}
+          keyAlias=${{ secrets.RELEASE_KEY_ALIAS }}
+          keyPassword=${{ secrets.RELEASE_KEY_PASSWORD }}
+          EOF
+
       - name: Make gradlew executable
         run: chmod +x gradlew
 
-      - name: Build APK
-        run: ./gradlew assembleDebug
+      - name: Build signed AAB
+        run: ./gradlew clean bundleRelease
 
-      - name: Prepare APK
+      - name: Verify AAB signature
+        run: jarsigner -verify -verbose -certs app/build/outputs/bundle/release/app-release.aab
+
+      - name: Prepare release files
         run: |
           mkdir -p ../release
-          cp app/build/outputs/apk/debug/app-debug.apk \
-             ../release/NipoVPN-dev-${{ env.PACKAGE_VERSION }}.apk
+          cp app/build/outputs/bundle/release/app-release.aab \
+             ../release/NipoVPN-dev-${{ env.PACKAGE_VERSION }}.aab
 
       - name: Create Pre-Release
         uses: softprops/action-gh-release@v2
@@ -49,4 +68,4 @@ jobs:
           name: Android dev build ${{ env.PACKAGE_VERSION }}
           prerelease: true
           generate_release_notes: true
-          files: release/*.apk
+          files: release/*.aab
