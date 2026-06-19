@@ -13,15 +13,15 @@ if (keystorePropertiesFile.exists()) {
 }
 
 android {
-    namespace = "net.sudoer.nipovpn"
+    namespace = "net.sudoer.nipo"
     compileSdk = 36
 
     defaultConfig {
-        applicationId = "net.sudoer.nipovpn"
+        applicationId = "net.sudoer.nipo"
         minSdk = 24
         targetSdk = 36
-        versionCode = 11592
-        versionName = "1.1.59.2"
+        versionCode = 11593
+        versionName = "1.1.59.3"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
