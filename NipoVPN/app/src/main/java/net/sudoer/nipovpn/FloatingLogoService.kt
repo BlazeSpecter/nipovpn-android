@@ -12,6 +12,7 @@ import android.view.View
 import android.view.WindowManager
 import android.widget.ImageView
 
+
 class FloatingLogoService : Service() {
     private var windowManager: WindowManager? = null
     private var floatingView: View? = null
