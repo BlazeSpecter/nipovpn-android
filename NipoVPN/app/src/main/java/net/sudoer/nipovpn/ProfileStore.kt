@@ -10,7 +10,8 @@ data class NipoProfile(
     val id: String = UUID.randomUUID().toString(),
     val name: String = "Default",
     val enabled: Boolean = false,
-    val config: NipoConfig = NipoConfig()
+    val config: NipoConfig = NipoConfig(),
+    val subscriptionId: String? = null,
 )
 
 private fun profilesFile(context: Context): File {
@@ -62,7 +63,8 @@ fun loadProfiles(context: Context): List<NipoProfile> {
                     id = obj.optString("id", UUID.randomUUID().toString()),
                     name = obj.optString("name", "Profile ${i + 1}"),
                     enabled = obj.optBoolean("enabled", false),
-                    config = cfg
+                    config = cfg,
+                    subscriptionId = obj.optString("subscriptionId", "").ifBlank { null },
                 )
             )
         }
@@ -108,6 +110,7 @@ fun saveProfiles(context: Context, profiles: List<NipoProfile>) {
             .put("name", profile.name)
             .put("enabled", profile.enabled)
             .put("config", cfgObj)
+            .put("subscriptionId", profile.subscriptionId ?: "")
 
         array.put(obj)
     }
