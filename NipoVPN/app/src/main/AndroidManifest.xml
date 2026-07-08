@@ -11,7 +11,8 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.NipoVPN"
         android:icon="@mipmap/ic_launcher"
-        android:roundIcon="@mipmap/ic_launcher_round">
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:usesCleartextTraffic="true">
 
         <activity
             android:name=".MainActivity"
