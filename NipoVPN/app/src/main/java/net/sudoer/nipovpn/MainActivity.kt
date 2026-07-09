@@ -46,10 +46,13 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.CleaningServices
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.FileDownload
 import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Subscriptions
 import androidx.compose.material.icons.filled.Terminal
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Surface
@@ -60,6 +63,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -72,7 +76,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.em
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import net.sudoer.nipo.ui.nd.NdBackButton
 import net.sudoer.nipo.ui.nd.NdBottomNav
 import net.sudoer.nipo.ui.nd.NdBoxInput
@@ -152,6 +159,13 @@ fun NipoVpnApp(context: Context, importUri: Uri?, onStart: () -> Unit, onStop: (
     // The hero Connect button connects this one. Null → fall back to the
     // running profile, else the first profile.
     var selectedId by remember { mutableStateOf(loadSelectedId(context)) }
+    var subscriptions by remember { mutableStateOf(loadSubscriptions(context)) }
+    var editSubId by remember { mutableStateOf<String?>(null) }
+    var subName by remember { mutableStateOf("") }
+    var subLink by remember { mutableStateOf("") }
+    var subFormError by remember { mutableStateOf<String?>(null) }
+    var subImportText by remember { mutableStateOf("") }
+    val scope = rememberCoroutineScope()
 
     val connectionState by ConnectionStatus.state.collectAsState()
     val activeProfile = profiles.firstOrNull { it.enabled }
@@ -162,6 +176,61 @@ fun NipoVpnApp(context: Context, importUri: Uri?, onStart: () -> Unit, onStop: (
     fun persist(updated: List<NipoProfile>) { profiles = updated; saveProfiles(context, updated) }
     // Update + persist the selection so it survives app restarts.
     fun select(id: String) { selectedId = id; saveSelectedId(context, id) }
+    fun persistSubs(updated: List<NipoSubscription>) { subscriptions = updated; saveSubscriptions(context, updated) }
+
+    fun duplicateSubError(name: String, link: String, excludingId: String?): String? {
+        val others = subscriptions.filter { it.id != excludingId }
+        return when {
+            others.any { it.name.equals(name, ignoreCase = true) } -> "A subscription with that name already exists"
+            others.any { it.link == link } -> "A subscription with that link already exists"
+            else -> null
+        }
+    }
+
+    // A profile is the "same" as another if its name matches case-insensitively,
+    // regardless of which subscription (or none) it came from. Merging a fetch
+    // updates the matching profile in place (keeping its id and user settings
+    // like enabled) instead of duplicating it; only truly new names are added.
+    fun mergeFetchedProfiles(current: List<NipoProfile>, fetched: List<NipoProfile>, subId: String): Triple<List<NipoProfile>, Int, Int> {
+        val result = current.toMutableList()
+        var added = 0
+        var updated = 0
+        fetched.forEach { incoming ->
+            val idx = result.indexOfFirst { it.name.equals(incoming.name, ignoreCase = true) }
+            if (idx >= 0) {
+                result[idx] = result[idx].copy(config = incoming.config, subscriptionId = subId)
+                updated++
+            } else {
+                result.add(incoming.copy(subscriptionId = subId))
+                added++
+            }
+        }
+        return Triple(result, added, updated)
+    }
+
+    // Fetches profiles from a subscription's link and merges them by name into
+    // the full profile list. Used both when a subscription is first
+    // added/imported and on manual refresh.
+    fun refreshSubscription(sub: NipoSubscription) {
+        scope.launch {
+            val (updatedSub, fetchedProfiles) = try {
+                val fetched = withContext(Dispatchers.IO) { fetchSubscriptionProfiles(sub.link) }
+                sub.copy(lastFetchAtMillis = System.currentTimeMillis(), lastError = null) to fetched
+            } catch (e: Exception) {
+                sub.copy(lastFetchAtMillis = System.currentTimeMillis(), lastError = e.message ?: "Fetch failed") to null
+            }
+            persistSubs(subscriptions.map { if (it.id == sub.id) updatedSub else it })
+            if (fetchedProfiles != null) {
+                val (merged, added, updated) = mergeFetchedProfiles(profiles, fetchedProfiles, sub.id)
+                persist(merged)
+                Toast.makeText(context, "$added new profile${if (added == 1) "" else "s"} added, $updated updated", Toast.LENGTH_LONG).show()
+                LogManager.append("Refreshed subscription: ${sub.name} ($added added, $updated updated)")
+            } else {
+                Toast.makeText(context, "Failed to refresh \"${sub.name}\": ${updatedSub.lastError}", Toast.LENGTH_LONG).show()
+                LogManager.append("Failed to refresh subscription: ${sub.name} — ${updatedSub.lastError}")
+            }
+        }
+    }
 
     LaunchedEffect(importUri) {
         importUri?.toString()?.let { link ->
@@ -199,6 +268,38 @@ fun NipoVpnApp(context: Context, importUri: Uri?, onStart: () -> Unit, onStop: (
         screen = "config"
     }
 
+    fun openSubForm(existing: NipoSubscription?) {
+        editSubId = existing?.id
+        subName = existing?.name ?: ""
+        subLink = existing?.link ?: ""
+        subFormError = null
+        dialog = "sub_form"
+    }
+
+    fun saveSub() {
+        val name = subName.trim()
+        val link = subLink.trim()
+        if (name.isBlank() || link.isBlank()) { subFormError = "Name and link are required"; return }
+        val error = duplicateSubError(name, link, excludingId = editSubId)
+        if (error != null) { subFormError = error; return }
+
+        val sub = subscriptions.firstOrNull { it.id == editSubId }?.copy(name = name, link = link)
+            ?: NipoSubscription(name = name, link = link)
+        persistSubs(if (editSubId == null) subscriptions + sub else subscriptions.map { if (it.id == sub.id) sub else it })
+        dialog = null
+        refreshSubscription(sub)
+    }
+
+    fun deleteSub(sub: NipoSubscription, alsoDeleteProfiles: Boolean) {
+        persistSubs(subscriptions.filter { it.id != sub.id })
+        persist(
+            if (alsoDeleteProfiles) profiles.filter { it.subscriptionId != sub.id }
+            else profiles.map { if (it.subscriptionId == sub.id) it.copy(subscriptionId = null) else it }
+        )
+        dialog = null
+        LogManager.append("Deleted subscription: ${sub.name}")
+    }
+
     // ── live telemetry ──────────────────────────────────────────────
     var nowMillis by remember { mutableStateOf(System.currentTimeMillis()) }
     LaunchedEffect(connectionState.running) {
@@ -226,7 +327,7 @@ fun NipoVpnApp(context: Context, importUri: Uri?, onStart: () -> Unit, onStop: (
         when {
             dialog != null -> dialog = null
             screen == "config" -> { draft = null; screen = "list" }
-            tab == "logs" -> tab = "profiles"
+            tab == "logs" || tab == "subs" -> tab = "profiles"
             else -> {
                 val now = System.currentTimeMillis()
                 if (now - lastBackMs < 2000) activity?.finish()
@@ -248,6 +349,7 @@ fun NipoVpnApp(context: Context, importUri: Uri?, onStart: () -> Unit, onStop: (
                         connected = connected && editing.id == activeProfile?.id,
                         onBack = { draft = null; screen = "list" },
                         onToggle = { select(editing.id); toggle(editing.id) },
+                        isNameTaken = { candidate -> profiles.any { it.id != editing.id && it.name.equals(candidate, ignoreCase = true) } },
                         onSave = { updated ->
                             if (draft?.id == updated.id) persist(profiles + updated)
                             else persist(profiles.map { if (it.id == updated.id) updated else it })
@@ -264,11 +366,14 @@ fun NipoVpnApp(context: Context, importUri: Uri?, onStart: () -> Unit, onStop: (
                         },
                     )
                     tab == "profiles" && profiles.isEmpty() -> NdEmptyState(
+                        title = "No Profiles",
+                        message = "Create a profile or import a share link to start tunneling traffic.",
                         onAdd = { addProfile() },
                         onImport = { importText = ""; dialog = "import" },
                     )
                     tab == "profiles" -> NdProfilesScreen(
                         profiles = profiles,
+                        subscriptions = subscriptions,
                         activeId = activeProfile?.id,
                         selectedId = resolvedSelectedId,
                         connected = connected,
@@ -279,6 +384,20 @@ fun NipoVpnApp(context: Context, importUri: Uri?, onStart: () -> Unit, onStop: (
                         onOpen = { draft = null; editId = it; screen = "config" },
                         onAdd = { addProfile() },
                         onImport = { importText = ""; dialog = "import" },
+                    )
+                    tab == "subs" && subscriptions.isEmpty() -> NdEmptyState(
+                        title = "No Subscriptions",
+                        message = "Add a subscription or import one to fetch profiles automatically.",
+                        onAdd = { openSubForm(null) },
+                        onImport = { subImportText = ""; dialog = "import_sub" },
+                    )
+                    tab == "subs" -> NdSubsScreen(
+                        subscriptions = subscriptions,
+                        onAdd = { openSubForm(null) },
+                        onImport = { subImportText = ""; dialog = "import_sub" },
+                        onEdit = { openSubForm(it) },
+                        onRefresh = { refreshSubscription(it) },
+                        onDelete = { editSubId = it.id; dialog = "delete_sub" },
                     )
                     else -> NdLogsScreen(
                         context = context,
@@ -302,6 +421,7 @@ fun NipoVpnApp(context: Context, importUri: Uri?, onStart: () -> Unit, onStop: (
                 NdDivider(c.border)
                 NdBottomNav(
                     items = listOf(
+                        NdNavItem("subs", Icons.Filled.Subscriptions, "Subs"),
                         NdNavItem("profiles", Icons.AutoMirrored.Filled.List, "Profiles"),
                         NdNavItem("logs", Icons.Filled.Terminal, "Logs"),
                     ),
@@ -343,6 +463,56 @@ fun NipoVpnApp(context: Context, importUri: Uri?, onStart: () -> Unit, onStop: (
                     LogManager.append("Deleted profile: ${editing.name}")
                 },
             )
+        }
+        if (dialog == "sub_form") {
+            NdSubFormDialog(
+                editing = editSubId != null,
+                name = subName,
+                link = subLink,
+                error = subFormError,
+                onNameChange = { subName = it; subFormError = null },
+                onLinkChange = { subLink = it; subFormError = null },
+                onDismiss = { dialog = null },
+                onConfirm = { saveSub() },
+            )
+        }
+        if (dialog == "import_sub") {
+            NdImportDialog(
+                title = "Import Subscription",
+                label = "Base64 string",
+                placeholder = "eyJuYW1lIjoi…",
+                multiline = true,
+                value = subImportText,
+                onChange = { subImportText = it },
+                onDismiss = { dialog = null },
+                onConfirm = {
+                    try {
+                        val decoded = String(android.util.Base64.decode(subImportText.trim(), android.util.Base64.NO_WRAP or android.util.Base64.URL_SAFE), Charsets.UTF_8)
+                        val obj = org.json.JSONObject(decoded)
+                        val name = obj.getString("name").trim()
+                        val link = obj.getString("link").trim()
+                        val error = duplicateSubError(name, link, excludingId = null)
+                        if (error != null) throw IllegalArgumentException(error)
+                        val sub = NipoSubscription(name = name, link = link)
+                        persistSubs(subscriptions + sub)
+                        dialog = null
+                        refreshSubscription(sub)
+                        LogManager.append("Imported subscription: $name")
+                    } catch (e: Exception) {
+                        LogManager.append("Subscription import failed: ${e.message}")
+                    }
+                },
+            )
+        }
+        if (dialog == "delete_sub") {
+            subscriptions.firstOrNull { it.id == editSubId }?.let { sub ->
+                NdDeleteSubDialog(
+                    name = sub.name,
+                    onDismiss = { dialog = null },
+                    onKeepProfiles = { deleteSub(sub, alsoDeleteProfiles = false) },
+                    onDeleteProfiles = { deleteSub(sub, alsoDeleteProfiles = true) },
+                )
+            }
         }
     }
 }
@@ -441,6 +611,7 @@ private fun NdProfileRow(
     profile: NipoProfile,
     selected: Boolean,
     running: Boolean,
+    subscriptionName: String?,
     onSelect: () -> Unit,
     onOpen: () -> Unit,
 ) {
@@ -467,7 +638,10 @@ private fun NdProfileRow(
             Column(Modifier.weight(1f)) {
                 Text(profile.name, maxLines = 1, overflow = TextOverflow.Ellipsis, style = TextStyle(fontFamily = NothingFonts.Body, fontWeight = FontWeight.Medium, fontSize = 16.sp, color = c.primary))
                 Spacer(Modifier.height(3.dp))
-                Text(profile.config.protocol.uppercase(), style = TextStyle(fontFamily = NothingFonts.Mono, fontSize = 12.sp, letterSpacing = 0.02.em, color = c.secondary))
+                Text(
+                    if (subscriptionName != null) "${profile.config.protocol.uppercase()} · $subscriptionName" else profile.config.protocol.uppercase(),
+                    style = TextStyle(fontFamily = NothingFonts.Mono, fontSize = 12.sp, letterSpacing = 0.02.em, color = c.secondary),
+                )
             }
         }
         Box(Modifier.size(44.dp).clip(RoundedCornerShape(999.dp)).ndClick(onClick = onOpen), contentAlignment = Alignment.Center) {
@@ -480,6 +654,7 @@ private fun NdProfileRow(
 @Composable
 private fun NdProfilesScreen(
     profiles: List<NipoProfile>,
+    subscriptions: List<NipoSubscription>,
     activeId: String?,
     selectedId: String?,
     connected: Boolean,
@@ -528,12 +703,67 @@ private fun NdProfilesScreen(
                     profile = p,
                     selected = p.id == selectedId,
                     running = connected && p.id == activeId,
+                    subscriptionName = subscriptions.firstOrNull { it.id == p.subscriptionId }?.name,
                     onSelect = { onSelect(p.id) },
                     onOpen = { onOpen(p.id) },
                 )
                 if (i < profiles.size - 1) NdDivider(c.border)
             }
             NdDivider(c.border)
+        }
+    }
+}
+
+// ── Subscriptions screen ─────────────────────────────────────────────
+@Composable
+private fun NdSubsScreen(
+    subscriptions: List<NipoSubscription>,
+    onAdd: () -> Unit,
+    onImport: () -> Unit,
+    onEdit: (NipoSubscription) -> Unit,
+    onRefresh: (NipoSubscription) -> Unit,
+    onDelete: (NipoSubscription) -> Unit,
+) {
+    val c = NdTheme.colors
+    Column(Modifier.fillMaxSize()) {
+        NdTopBar(
+            title = "Subscriptions",
+            trailing = {
+                NdIconButton(Icons.Filled.FileDownload, onImport)
+                NdIconButton(Icons.Filled.Add, onAdd)
+            },
+        )
+        Column(Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 4.dp)) {
+            subscriptions.forEachIndexed { i, s ->
+                NdSubRow(s, onEdit = { onEdit(s) }, onRefresh = { onRefresh(s) }, onDelete = { onDelete(s) })
+                if (i < subscriptions.size - 1) NdDivider(c.border)
+            }
+            NdDivider(c.border)
+        }
+    }
+}
+
+@Composable
+private fun NdSubRow(sub: NipoSubscription, onEdit: () -> Unit, onRefresh: () -> Unit, onDelete: () -> Unit) {
+    val c = NdTheme.colors
+    val status = when {
+        sub.lastError != null -> "Error: ${sub.lastError}"
+        sub.lastFetchAtMillis != null -> "Updated ${android.text.format.DateUtils.getRelativeTimeSpanString(sub.lastFetchAtMillis, System.currentTimeMillis(), android.text.format.DateUtils.MINUTE_IN_MILLIS)}"
+        else -> "Never fetched"
+    }
+    val statusColor = if (sub.lastError != null) c.accent else c.secondary
+    Column(Modifier.fillMaxWidth().padding(vertical = 14.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text(sub.name, maxLines = 1, overflow = TextOverflow.Ellipsis, style = TextStyle(fontFamily = NothingFonts.Body, fontWeight = FontWeight.Medium, fontSize = 16.sp, color = c.primary))
+                Spacer(Modifier.height(3.dp))
+                Text(sub.link, maxLines = 1, overflow = TextOverflow.Ellipsis, style = TextStyle(fontFamily = NothingFonts.Mono, fontSize = 12.sp, color = c.disabled))
+                Spacer(Modifier.height(3.dp))
+                Text(status, style = TextStyle(fontFamily = NothingFonts.Mono, fontSize = 11.sp, color = statusColor))
+            }
+            NdIconButton(Icons.Filled.Refresh, onRefresh, size = 30.dp)
+            NdIconButton(Icons.Filled.Edit, onEdit, size = 30.dp)
+            NdIconButton(Icons.Filled.Delete, onDelete, size = 30.dp)
         }
     }
 }
@@ -604,6 +834,7 @@ private fun NdConfigScreen(
     connected: Boolean,
     onBack: () -> Unit,
     onToggle: () -> Unit,
+    isNameTaken: (String) -> Boolean,
     onSave: (NipoProfile) -> Unit,
     onDelete: () -> Unit,
     onCopyLink: () -> Unit,
@@ -611,7 +842,11 @@ private fun NdConfigScreen(
     val c = NdTheme.colors
     var name by remember(profile.id) { mutableStateOf(profile.name) }
     var cfg by remember(profile.id) { mutableStateOf(profile.config.normalized()) }
-    fun save() = onSave(profile.copy(name = name, config = cfg.normalized()))
+    var nameError by remember(profile.id) { mutableStateOf<String?>(null) }
+    fun save() {
+        if (isNameTaken(name.trim())) { nameError = "A profile with this name already exists"; return }
+        onSave(profile.copy(name = name.trim(), config = cfg.normalized()))
+    }
 
     val selectedMethods = cfg.methods.lines().map { it.trim().uppercase() }.filter { it.isNotBlank() }.toSet()
     fun toggleMethod(m: String) {
@@ -628,7 +863,10 @@ private fun NdConfigScreen(
         Column(Modifier.weight(1f).fillMaxWidth().navigationBarsPadding().verticalScroll(rememberScrollState()).padding(start = 16.dp, end = 16.dp, bottom = 32.dp)) {
 
             NdSection("Profile") {
-                NdBoxInput("Profile name", name, { name = it }, mono = false)
+                NdBoxInput("Profile name", name, { name = it; nameError = null }, mono = false)
+                if (nameError != null) {
+                    Text(nameError!!, style = TextStyle(fontFamily = NothingFonts.Body, fontSize = 13.sp, color = c.accent))
+                }
                 NdBoxInput("Token", cfg.token, { cfg = cfg.copy(token = it) }, placeholder = "your-server-token", trailing = {
                     NdIconButton(Icons.Filled.ContentCopy, { copyToClipboard(context, "Token", cfg.token) }, size = 28.dp)
                 })
@@ -719,16 +957,30 @@ private fun NdDialogScrim(onDismiss: () -> Unit, content: @Composable () -> Unit
 }
 
 @Composable
-private fun NdImportDialog(value: String, onChange: (String) -> Unit, onDismiss: () -> Unit, onConfirm: () -> Unit) {
+private fun NdDialogHeader(title: String, onDismiss: () -> Unit) {
     val c = NdTheme.colors
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+        NdLabel(title, color = c.display, size = 13.sp)
+        NdButton("[ X ]", onDismiss, variant = NdButtonVariant.GHOST)
+    }
+}
+
+@Composable
+private fun NdImportDialog(
+    title: String = "Import Profile",
+    label: String = "Share link",
+    placeholder: String = "nipovpn://…",
+    multiline: Boolean = false,
+    value: String,
+    onChange: (String) -> Unit,
+    onDismiss: () -> Unit,
+    onConfirm: () -> Unit,
+) {
     NdDialogScrim(onDismiss) {
         Column {
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                NdLabel("Import Profile", color = c.display, size = 13.sp)
-                NdButton("[ X ]", onDismiss, variant = NdButtonVariant.GHOST)
-            }
+            NdDialogHeader(title, onDismiss)
             Spacer(Modifier.height(20.dp))
-            NdInput("Share link", value, onChange, placeholder = "nipovpn://…")
+            NdInput(label, value, onChange, multiline = multiline, placeholder = placeholder)
             Spacer(Modifier.height(28.dp))
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End)) {
                 NdButton("Cancel", onDismiss, variant = NdButtonVariant.SECONDARY)
@@ -755,16 +1007,66 @@ private fun NdDeleteDialog(name: String, onDismiss: () -> Unit, onConfirm: () ->
     }
 }
 
+@Composable
+private fun NdSubFormDialog(
+    editing: Boolean,
+    name: String,
+    link: String,
+    error: String?,
+    onNameChange: (String) -> Unit,
+    onLinkChange: (String) -> Unit,
+    onDismiss: () -> Unit,
+    onConfirm: () -> Unit,
+) {
+    val c = NdTheme.colors
+    NdDialogScrim(onDismiss) {
+        Column {
+            NdDialogHeader(if (editing) "Edit Subscription" else "Add Subscription", onDismiss)
+            Spacer(Modifier.height(20.dp))
+            NdInput("Name", name, onNameChange, mono = false)
+            Spacer(Modifier.height(16.dp))
+            NdInput("Link", link, onLinkChange, placeholder = "https://…")
+            if (error != null) {
+                Spacer(Modifier.height(10.dp))
+                Text(error, style = TextStyle(fontFamily = NothingFonts.Body, fontSize = 13.sp, color = c.accent))
+            }
+            Spacer(Modifier.height(28.dp))
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End)) {
+                NdButton("Cancel", onDismiss, variant = NdButtonVariant.SECONDARY)
+                NdButton("Save", onConfirm, variant = NdButtonVariant.PRIMARY)
+            }
+        }
+    }
+}
+
+@Composable
+private fun NdDeleteSubDialog(name: String, onDismiss: () -> Unit, onKeepProfiles: () -> Unit, onDeleteProfiles: () -> Unit) {
+    val c = NdTheme.colors
+    NdDialogScrim(onDismiss) {
+        Column {
+            NdStatus("Delete Subscription", color = c.accent, dot = NdDot.NONE)
+            Spacer(Modifier.height(12.dp))
+            Text("Subscription “$name” will be removed. What should happen to its profiles?", style = TextStyle(fontFamily = NothingFonts.Body, fontSize = 15.sp, lineHeight = 22.sp, color = c.primary))
+            Spacer(Modifier.height(28.dp))
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                NdButton("Keep profiles (mark Local)", onKeepProfiles, variant = NdButtonVariant.SECONDARY, full = true)
+                NdButton("Delete profiles too", onDeleteProfiles, variant = NdButtonVariant.DESTRUCTIVE, full = true)
+                NdButton("Cancel", onDismiss, variant = NdButtonVariant.GHOST, full = true)
+            }
+        }
+    }
+}
+
 // ── Empty state ─────────────────────────────────────────────────────
 @Composable
-private fun NdEmptyState(onAdd: () -> Unit, onImport: () -> Unit) {
+private fun NdEmptyState(title: String, message: String, onAdd: () -> Unit, onImport: () -> Unit) {
     val c = NdTheme.colors
     Column(Modifier.fillMaxSize().padding(32.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
         Box(Modifier.size(120.dp).border(1.dp, c.borderVisible)) { NdDotGrid(Modifier.matchParentSize()) }
         Spacer(Modifier.height(32.dp))
-        NdLabel("No Profiles", color = c.secondary, size = 13.sp)
+        NdLabel(title, color = c.secondary, size = 13.sp)
         Spacer(Modifier.height(12.dp))
-        Text("Create a profile or import a share link to start tunneling traffic.", style = TextStyle(fontFamily = NothingFonts.Body, fontSize = 14.sp, lineHeight = 21.sp, color = c.disabled, textAlign = androidx.compose.ui.text.style.TextAlign.Center))
+        Text(message, style = TextStyle(fontFamily = NothingFonts.Body, fontSize = 14.sp, lineHeight = 21.sp, color = c.disabled, textAlign = androidx.compose.ui.text.style.TextAlign.Center))
         Spacer(Modifier.height(32.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             NdButton("Import", onImport, variant = NdButtonVariant.SECONDARY, icon = Icons.Filled.FileDownload)
