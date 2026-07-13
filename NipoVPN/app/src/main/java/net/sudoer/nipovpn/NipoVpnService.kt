@@ -42,6 +42,17 @@ class NipoVpnService : Service() {
 
     override fun onBind(intent: Intent?): IBinder? = null
 
+    // Android 15+ enforces a total execution-time limit for "dataSync" foreground
+    // services and calls this when it's hit, expecting us to stop within seconds.
+    // Ignoring it is what causes ForegroundServiceDidNotStopInTimeException on
+    // long-running VPN sessions.
+    override fun onTimeout(startId: Int, fgsType: Int) {
+        LogManager.append("Foreground service execution time limit reached; stopping")
+        stopNipoVpn()
+        stopForeground(STOP_FOREGROUND_REMOVE)
+        stopSelf(startId)
+    }
+
 
     private fun startNipoVpn() {
         if (nipoProcess != null) {
